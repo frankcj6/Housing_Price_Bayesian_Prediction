@@ -1,0 +1,203 @@
+---
+title: "Bayesian approaches of Housing price analysis"
+author: "Frank Jiang"
+date: "5/14/2020"
+output: 
+  pdf_document:
+    number_sections: yes
+---
+
+```{r setup, include=FALSE, warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data preprocessing
+
+This dataset we used in this project is the Ames Housing dataset compiled by Dean De Cock for use in data science. It is a more expanded version of the often-cited Boston Housing dataset. Our version was a split version from Kaggle, which was originally used for machine learning and advanced regression techniques training. The link are presented below
+https://www.kaggle.com/c/house-prices-advanced-regression-techniques/data. 
+
+However, we decide to use the Bayesian approach to analyze this dataset and potentially create a bayesian model that could predict the housing prices base on some of the predictors available in this dataset. 
+
+To create priors and draws using the dataset, we preprocess the dataset(including creating a dummy variable for the year built and the second floor). The new predictors are generated as below. We define old in year built to be before 2008. Also, the area of the second floor is recoded to whether the original housing has a second floor or not. 
+```{r,results='hide',warning=FALSE}
+library(dplyr)
+library(ggplot2)
+housing_data<- read.csv('train.csv')
+#create binary variable for yearbuilt
+housing_data$yearbuilt_bi<- ifelse(
+  housing_data$YearBuilt<2008,
+  yes='old',
+  no ='new'
+)
+housing_data$yearbuilt_bi<- as.factor(housing_data$yearbuilt_bi)
+
+#recode whether the house has central air or not
+housing_data$CentralAir<- ifelse(
+  housing_data$CentralAir=='Y',
+  yes=1,
+  no=0
+)
+housing_data$CentralAir<- as.factor(housing_data$CentralAir)
+
+#filter sale condition to only two conditions, normal and abnormal
+housing_data<- housing_data %>% filter(housing_data$SaleCondition=='Normal'| housing_data$SaleCondition=='Abnorml')
+housing_data$SaleCondition<- as.factor(as.character(housing_data$SaleCondition))
+
+#recode area of the second floor to whether if the house has a second floor
+housing_data$secondfloor_bi<- ifelse(
+  housing_data$X2ndFlrSF==0,
+  yes=0,
+  no=1
+)
+housing_data$secondfloor_bi<- as.factor(housing_data$secondfloor_bi)
+housing_data$Street<- as.factor(housing_data$Street)
+
+#filter the general zone classification of the house area to only Residential High density, Low denisty, and Medium density
+housing_data<- housing_data %>% filter(MSZoning=='RH'|MSZoning=='RL'
+                                       |MSZoning=='RM')
+housing_data$MSZoning<- as.character(housing_data$MSZoning)
+housing_data$MSZoning<- as.factor(housing_data$MSZoning)
+summary(housing_data$SalePrice)
+```
+
+## Gaussian Model
+In this section, we decide to draw priors from the predictors we select and use the gaussian family to draw from priors. First, we use get_prior to get a quick look at what all parameters are referred to.Then, we use brm to fit the priors predictive distribution by setting the parameter sample_prior to 'only'. 
+
+We decide to use a normal distribution for all the parameters and gradually add more predictors to the model to see how it performs. The model selection and evaluation are completed in the later section. 
+
+## Priors and Priors predictive distribution with brm
+```{r,results='hide',warning=FALSE}
+library(brms)
+get_prior(SalePrice~LotArea+GrLivArea, family='Poisson',data=housing_data)
+prior1<- c(set_prior('normal(3,5)',class='b',coef='GrLivArea'),
+           set_prior('normal(1,5)',class='b',coef='LotArea'),
+           set_prior('normal(10000,1000)',class='Intercept'))
+ppd1<- brm(SalePrice~LotArea+GrLivArea,family='gaussian',data=housing_data,prior=prior1,sample_prior='only')
+
+get_prior(SalePrice~log(LotArea)+log(GrLivArea),family='gaussian',data=housing_data)
+prior2<- c(set_prior('normal(7,10)',class='b',coef='logGrLivArea'),
+           set_prior('normal(2,10)',class='b',coef='logLotArea'),
+           set_prior('normal(10000,1000)',class='Intercept'))
+ppd2<- brm(SalePrice~log(LotArea)+log(GrLivArea),family='gaussian',data=housing_data,prior=prior2,sample_prior = 'only')
+
+get_prior(SalePrice~yearbuilt_bi+log(LotArea)+MSZoning+Street+secondfloor_bi+CentralAir+secondfloor_bi+log(GrLivArea)+SaleCondition,family='gaussian',data=housing_data)
+prior3<- c(set_prior('normal(0.4,1)',class='b',coef='CentralAir1'),
+           set_prior('normal(5,10)',class='b',coef='logGrLivArea'),
+           set_prior('normal(2,10)',class='b',coef='logLotArea'),
+           set_prior('normal(0.2,1)',class='b',coef='MSZoningRL'),
+           set_prior('normal(0.1,1)',class='b',coef='MSZoningRM'),
+           set_prior('normal(0,0.5)',class='b',coef='SaleConditionNormal'),
+           set_prior('normal(0.8,1)',class='b',coef='secondfloor_bi1'),
+           set_prior('normal(0.1,0.8)',class='b',coef='StreetPave'),
+           set_prior('normal(-0.1,0.3)',class='b',coef='yearbuilt_biold'),
+           set_prior('normal(10000,1000)',class='Intercept'))
+ppd3<- brm(SalePrice~yearbuilt_bi+log(LotArea)+MSZoning+Street+secondfloor_bi+CentralAir+secondfloor_bi+log(GrLivArea)+SaleCondition,family='gaussian',data=housing_data,prior=prior3,sample_prior = 'only')
+```
+
+## Basic Pipeline Model Selection
+In this section, we did some basic overview of the fitted prior predictive distribution, and see if the fitted prior predictive distributions are all plausible. 
+```{r}
+summary(ppd1)
+summary(ppd2)
+summary(ppd3)
+mu1<- pp_expect(ppd1,nsamples=400)
+plot(density(mu1))
+mu2<- pp_expect(ppd2,nsamples=400)
+plot(density(mu2))
+mu3<- pp_expect(ppd3,nsamples=400)
+plot(density(mu3))
+```
+From the density graph, we can conclude that though it is not a super smooth normal distribution, all three models which include the prior predictive distribution are plausible. However, model 2 and 3 which uses the log transformation of the living area and lot area predictors performs better than only including the original variables. 
+
+## Negative Binomial Model
+In this section, we decide to fit the prior predictive distribution using the negative binomial distribution. In order to compare prior predictive distribution using negative binomial distribution and gaussian distribution, we decide to use the same predictors as the model above. 
+
+## Priors and Priors predictive distribution with brm
+```{r,results='hide',warning=FALSE}
+get_prior(SalePrice~yearbuilt_bi+log(LotArea)+MSZoning+Street+secondfloor_bi+CentralAir+secondfloor_bi+log(GrLivArea)+SaleCondition,family='negbinomial',data=housing_data)
+prior4<- c(set_prior('normal(0.4,1)',class='b',coef='CentralAir1'),
+           set_prior('normal(5,10)',class='b',coef='logGrLivArea'),
+           set_prior('normal(2,10)',class='b',coef='logLotArea'),
+           set_prior('normal(0.2,1)',class='b',coef='MSZoningRL'),
+           set_prior('normal(0.1,1)',class='b',coef='MSZoningRM'),
+           set_prior('normal(0,0.5)',class='b',coef='SaleConditionNormal'),
+           set_prior('normal(0.8,1)',class='b',coef='secondfloor_bi1'),
+           set_prior('normal(0.1,0.8)',class='b',coef='StreetPave'),
+           set_prior('normal(-0.1,0.3)',class='b',coef='yearbuilt_biold'),
+           set_prior('normal(10000,1000)',class='Intercept'))
+ppd4<- brm(SalePrice~yearbuilt_bi+log(LotArea)+MSZoning+Street+secondfloor_bi+CentralAir+secondfloor_bi+log(GrLivArea)+SaleCondition,family='negbinomial',data=housing_data,prior=prior4,sample_prior = 'only')
+```
+
+## Model Plausibility check
+```{r}
+summary(ppd4)
+mu4<- pp_expect(ppd4,nsamples=400)
+```
+Here, we did a similar plausibility check of the prior predictive distribution by plotting the density plot. It can be concluded that the prior draw did not violate any prior assumption. 
+
+
+#  Posterior Distribution
+After confirming that all three priors draw are plausible, we fit the posterior distribution using the three priors we choose as below.
+```{r,results='hide',warning=FALSE}
+post_gaussian_1<- brm(SalePrice~log(LotArea)+log(GrLivArea),family='gaussian',data=housing_data,prior=prior2)
+post_gaussian_2<- brm(SalePrice~yearbuilt_bi+log(LotArea)+MSZoning+Street+secondfloor_bi+CentralAir+secondfloor_bi+log(GrLivArea)+SaleCondition,family='gaussian',data=housing_data,prior=prior3)
+post_negbinom<- brm(SalePrice~yearbuilt_bi+log(LotArea)+MSZoning+Street+secondfloor_bi+CentralAir+secondfloor_bi+log(GrLivArea)+SaleCondition,family='negbinomial',data=housing_data,prior=prior4)
+
+summary(post_gaussian_1)
+summary(post_gaussian_2)
+summary(post_negbinom)
+```
+Despite our skeptical error, We can tell that from our results, we did not observe any data failed to convergence from all three posterior predictive distribution. Neither do we find an ineffective sample size and non-potential Rhat value. 
+
+Here we plot the posterior predictive distributions (in light blue) plotted against the true distribution of the outcome variable. A separate dot plot and density plot are both presented as below.
+```{r}
+pp_check(post_gaussian_1,type='loo_intervals')+ggplot2::scale_y_continuous(trans='log10')
+pp_check(post_gaussian_1,type='loo_intervals')+ggplot2::scale_y_continuous(trans='log10')
+pp_check(post_negbinom,type='loo_intervals')+ggplot2::scale_y_continuous(trans='log10')
+
+pp_check(post_gaussian_1,plotfun='dens_overlay',nreps=15)
+pp_check(post_gaussian_2,plotfun='dens_overlay',nreps=15)
+pp_check(post_negbinom,plotfun='dens_overlay',nreps=15)
+```
+To our surprise, we can carefully conclude that the previous two models did not represent the original data well. However, we still cannot make a decision on which model should we choose yet. 
+
+#  Model Decision and interpretation
+```{r}
+loo_compare(loo(post_gaussian_1),loo(post_gaussian_2),loo(post_negbinom))
+loo(post_negbinom)
+```
+After comparing three models using the Expected Log Predictive Density(ELPD) as the criterion, we can find out that the difference between the model complicated model using Gaussian distribution and simpler model is not significant. Thus, we should choose the simpler model between those two. However, the model using negative binomial distribution is significantly ahead. Thus, we decide to choose the negative binomial model to pursue further analysis. 
+
+Here, we focus on the conditional effect of different predictors, which have a relatively small effect on the house pricing comparing to the living area and lot area. We can plot the posterior distribution of the effect of those variables. 
+```{r}
+pairs(post_negbinom$fit,pars = c('shape','lp__'))
+conditional_effects(post_negbinom,effects='CentralAir')
+conditional_effects(post_negbinom,effects='yearbuilt_bi')
+conditional_effects(post_negbinom,effects='MSZoning')
+conditional_effects(post_negbinom,effects='Street')
+conditional_effects(post_negbinom,effects='secondfloor_bi')
+```
+There are a few things that are interesting to mention. First of all, as expected, houses with a central air system worth more in value. Also, the house that is built prior to 2008 has a noticeably decrease in its sale price than those who built after 2008. Contrary to what we previously thought, the house with a second floor has a lower sale price comparing to those with only one floor. What's more, the house with a front street of gravel rather than paved end up in higher sale price. Last but not least, houses in the residential low-density area have a higher sale price, while there seems to not be a difference between houses in residential medium-density and high-density areas. 
+
+Here, we test the posterior probability that certain predictors increase a house sale price. We find out that the Living area, lot area, and central air has a probability of 1, while street pave has a value of 0.17 and second floor with a value of 0. However, these do not show a causal effect between these predictors and the outcome variable which is the sale price of the house.   
+```{r}
+hypothesis(post_negbinom,hypothesis='logGrLivArea > 0')
+hypothesis(post_negbinom,hypothesis='logLotArea>0')
+hypothesis(post_negbinom,hypothesis='CentralAir1>0')
+hypothesis(post_negbinom,hypothesis='StreetPave>0')
+hypothesis(post_negbinom,hypothesis='secondfloor_bi1>0')
+```
+
+Lastly, we check for the outliers in our selected model with the negative binomial distribution. We can find out that data entry 46 seems to be significantly off. More investigation needs to be done to find out why this is the case. 
+```{r}
+plot(loo(post_negbinom),label_points=TRUE)
+```
+
+# Drawbacks and improvement
+
+Despite using the negative binomial distribution seems to be a reasonable approach to apply bayesian statistics to predict future housing sale price. Several things could be improved. First, more distribution can be used in our priors draw such as student t distribution. Also, we could potentially use Poisson distribution fit posterior predictive distribution with brm. 
+Unfortunately, there are also some drawbacks to our analysis. We did not include some of the predictors available in the dataset according to our previous assumptions and expectations. Also, we did not measure the overfitting issue in our selected model, which could be done in the future.
+
+# Final Suggestions
+
+Overall, we believe that our fitted distribution is relatively efficient in measuring house sale price. We could raise some suggestions for property construction and development as well as the general public looking for house purchase. As mentioned before, excluding larger living areas and lot area, small factors that could increase housing prices including constructed without a second floor, in the residential medium density area, built after 2008, with a central air system, and with the front street with gravel.   
